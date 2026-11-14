@@ -19,23 +19,36 @@ JS = r"""
 var PLAIN = %%PLAIN%%;
 var TABLES = %%TABLES%%;
 
-function expMap(n){var m=Process.findModuleByName(n),o={};if(!m)return o;m.enumerateExports().forEach(function(e){o[e.name]=e.address;});return o;}
-var S=expMap('Qt6Sql.dll'), C=expMap('Qt6Core.dll');
-function pick(map,sub){for(var k in map){if(k.indexOf(sub)>=0)return map[k];}return null;}
+// Cross-platform Qt module lookup.
+//   Windows : Qt6Sql.dll / Qt6Core.dll (MSVC-mangled exports)
+//   Linux   : libQt6Sql.so.6 / libQt5Core.so.5 ... (Itanium-mangled exports)
+//   macOS   : QtSql / QtCore frameworks (Itanium-mangled exports)
+function findQtModule(kind){
+  var mods=Process.enumerateModules(), re=new RegExp('qt\\d?'+kind,'i');
+  for(var i=0;i<mods.length;i++){ if(re.test(mods[i].name.replace(/[^a-z0-9]/gi,''))) return mods[i]; }
+  return null;
+}
+function expMapMod(m){var o={};if(!m)return o;try{m.enumerateExports().forEach(function(e){o[e.name]=e.address;});}catch(e){}return o;}
+var modSql=findQtModule('sql'), modCore=findQtModule('core');
+var S=expMapMod(modSql), C=expMapMod(modCore);
+// pick: try a list of name fragments. Each needed symbol lists BOTH the MSVC
+// fragment (Windows) and the Itanium fragment (Linux/macOS), so one lookup works
+// on every platform without changing the hooking logic below.
+function pick(map,subs){if(typeof subs==='string')subs=[subs];for(var k in map){for(var j=0;j<subs.length;j++){if(k.indexOf(subs[j])>=0)return map[k];}}return null;}
+function need(addr,label){if(!addr){send({t:'err',msg:'symbol not found: '+label+' (Sql module='+(modSql?modSql.name:'MISSING')+', Core module='+(modCore?modCore.name:'MISSING')+'). Unsupported Viber/Qt build?'});throw new Error('missing symbol: '+label);}return addr;}
 
-if(!pick(S,'exec@QSqlQuery@@QEAA_NAEBVQString')){ send({t:'err',msg:'Qt6Sql symbols not found (newer Viber version?)'}); }
+var EXEC=['exec@QSqlQuery@@QEAA_NAEBVQString','9QSqlQuery4execERK7QString'];
+var f_database=new NativeFunction(need(pick(S,['database@QSqlDatabase','12QSqlDatabase8databaseE']),'QSqlDatabase::database'),'void',['pointer','pointer','bool']);
+var f_ctorQ   =new NativeFunction(need(pick(S,['0QSqlQuery@@QEAA@AEBVQSqlDatabase','9QSqlQueryC1ERK12QSqlDatabase','9QSqlQueryC2ERK12QSqlDatabase']),'QSqlQuery(QSqlDatabase)'),'void',['pointer','pointer']);
+var f_exec    =new NativeFunction(need(pick(S,EXEC),'QSqlQuery::exec(QString)'),'bool',['pointer','pointer']);
+var f_dtorQ   =new NativeFunction(need(pick(S,['1QSqlQuery@@QEAA@XZ','9QSqlQueryD1Ev','9QSqlQueryD2Ev']),'~QSqlQuery'),'void',['pointer']);
+var f_dtorDb  =new NativeFunction(need(pick(S,['1QSqlDatabase@@QEAA@XZ','12QSqlDatabaseD1Ev','12QSqlDatabaseD2Ev']),'~QSqlDatabase'),'void',['pointer']);
+var a_prep    =pick(S,['prepare@QSqlQuery','9QSqlQuery7prepareE']);
+var a_exec    =pick(S,EXEC);
 
-var f_database=new NativeFunction(pick(S,'database@QSqlDatabase'),'void',['pointer','pointer','bool']);
-var f_ctorQ   =new NativeFunction(pick(S,'0QSqlQuery@@QEAA@AEBVQSqlDatabase'),'void',['pointer','pointer']);
-var f_exec    =new NativeFunction(pick(S,'exec@QSqlQuery@@QEAA_NAEBVQString'),'bool',['pointer','pointer']);
-var f_dtorQ   =new NativeFunction(pick(S,'1QSqlQuery@@QEAA@XZ'),'void',['pointer']);
-var f_dtorDb  =new NativeFunction(pick(S,'1QSqlDatabase@@QEAA@XZ'),'void',['pointer']);
-var a_prep    =pick(S,'prepare@QSqlQuery');
-var a_exec    =pick(S,'exec@QSqlQuery@@QEAA_NAEBVQString');
-
-var a_fromU16 =pick(C,'fromUtf16@QString@@SA?AV1@PEB_S') || pick(C,'fromUtf16@QString');
-var f_fromU16 =new NativeFunction(a_fromU16,'void',['pointer','pointer','int64']);
-var f_dtorStr =new NativeFunction(pick(C,'1QString@@QEAA@XZ'),'void',['pointer']);
+var a_fromU16 =pick(C,['fromUtf16@QString@@SA?AV1@PEB_S','fromUtf16@QString','7QString8fromUtf16E']);
+var f_fromU16 =new NativeFunction(need(a_fromU16,'QString::fromUtf16'),'void',['pointer','pointer','int64']);
+var f_dtorStr =new NativeFunction(need(pick(C,['1QString@@QEAA@XZ','7QStringD1Ev','7QStringD2Ev']),'~QString'),'void',['pointer']);
 
 function readQString(p){try{var d=p.add(8).readPointer();var s=p.add(16).readLong();if(d.isNull()||s<=0||s>1e6)return "";return d.readUtf16String(s);}catch(e){return "";}}
 function makeQString(s){var buf=Memory.alloc(32);var u=Memory.allocUtf16String(s);f_fromU16(buf,u,s.length);return buf;}

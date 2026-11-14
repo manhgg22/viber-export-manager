@@ -30,6 +30,10 @@ def candidate_roots():
     else:  # Linux
         home = os.path.expanduser("~")
         roots.append(os.path.join(home, ".ViberPC"))
+        roots.append(os.path.join(home, ".local", "share", "ViberPC"))
+        # Flatpak / Snap sandbox locations
+        roots.append(os.path.join(home, ".var", "app", "com.viber.Viber", "data", "ViberPC"))
+        roots.append(os.path.join(home, "snap", "viber", "current", ".ViberPC"))
     return [r for r in roots if r]
 
 

@@ -28,7 +28,7 @@ của **chính bạn** (ví dụ: tổng hợp nhiều group công việc để 
 
 ## Yêu cầu
 
-- **Windows 10/11** (hướng chính) hoặc **macOS** (xem mục Mac).
+- **Windows 10/11** (hướng chính), **macOS** (xem mục Mac), hoặc **Linux** (xem mục Linux — thử nghiệm).
 - **Python 3.10+** — https://www.python.org/downloads/ (khi cài nhớ tick *Add to PATH*).
 - **Viber Desktop** đã cài, **đang đăng nhập**, và đang chạy.
 
@@ -79,6 +79,44 @@ schtasks /create /tn "ViberSync" /tr "%CD%\viber_sync.bat" /sc minute /mo 10 /f
 
 ---
 
+## Cài & chạy trên LINUX (thử nghiệm)
+
+Viber for Linux cũng là ứng dụng **Qt** giống bản Windows, nên dùng **chung engine Frida**.
+Chỉ khác tên module/symbol của Qt — engine đã tự nhận cả hai kiểu (Windows & Linux).
+
+```bash
+# 1) Cài Frida (1 lần)
+chmod +x install.sh viber_sync.sh
+./install.sh
+
+# 2) Mở Viber Desktop và đăng nhập.
+
+# 3) Export + ra báo cáo (1 lệnh)
+./viber_sync.sh
+```
+
+Kết quả giống hệt Windows: `live_from_db.csv`, `processed_real/overview.md`,
+`processed_real/messages_all.csv`. Trang web và server webhook (`viber_web.py`,
+`viber_ingest_server.py`) chạy y như trên Windows (`python3 viber_web.py --port 17653`).
+
+Tự động chạy ngầm bằng **cron** (thay cho Task Scheduler):
+
+```bash
+# mỗi 10 phút
+( crontab -l 2>/dev/null; echo "*/10 * * * * cd $PWD && ./viber_sync.sh >> viber_sync.log 2>&1" ) | crontab -
+```
+
+> ⚠️ **Phần Linux chưa được test trên máy Linux thật.** Engine bám vào ký hiệu nội bộ của Qt.
+> Nếu thấy `symbol not found` hoặc file export rỗng:
+> - Viber Linux có thể dùng **Qt5** (bản Windows dùng Qt6). Cách đọc chuỗi (QString) trong engine
+>   viết theo bố cục **Qt6**; với Qt5 có thể cần chỉnh. Mở issue kèm dòng báo lỗi (nó in ra tên module
+>   Qt tìm được) để mình cập nhật.
+> - Chạy cần quyền gắn tiến trình: nếu bị chặn `ptrace`, chạy với `sudo ./viber_sync.sh`, hoặc tạm thời
+>   `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope`.
+> - Bản **Snap/Flatpak** chạy trong sandbox — Frida khó gắn vào; nên dùng bản `.deb`/AppImage thường.
+
+---
+
 ## Cài & chạy trên macOS
 
 Engine Windows không chạy trên Mac. Dùng engine riêng cho Mac:
@@ -111,8 +149,10 @@ Engine Mac xuất ra `viber_export.csv` (DateTime, ChatID, Contact, Direction, M
 | `viber_process.py` | CSV (Win hoặc Mac) → báo cáo overview + bảng cho AI | repo này |
 | `viber_web.py` | Trang web xem gần real-time + nút làm mới + loop tự export | repo này |
 | `viber_ingest_server.py` | Server webhook nhận tin từ Android forwarder (real-time) | repo này |
-| `viber_sync.bat` | 1 lệnh: export → CSV → báo cáo | repo này |
-| `run_viber_export_mac.sh` | Bản bọc cho macOS | repo này |
+| `viber_sync.bat` | 1 lệnh (Windows): export → CSV → báo cáo | repo này |
+| `viber_sync.sh` | 1 lệnh (Linux): export → CSV → báo cáo | repo này |
+| `install.bat` / `install.sh` | Cài Frida (Windows / Linux-macOS) | repo này |
+| `run_viber_export_mac.sh` | Bản bọc cho macOS (engine lldb riêng) | repo này |
 | `vendor/ViberPC-Export/` | Engine giải mã Viber Desktop (Windows, Frida) | **GPL-3.0**, bên thứ ba |
 
 ### Ghi chú kỹ thuật quan trọng
@@ -150,6 +190,8 @@ Mỗi tin mới sẽ được đẩy vào `live_from_db.csv` ngay lập tức, r
 | Cổng đã bị chiếm | Đổi `--port` sang cổng khác đang trống. |
 | Antivirus cảnh báo | Frida bị gắn cờ do can thiệp tiến trình; cho phép nếu bạn tin tưởng. |
 | Viber cập nhật lớn làm hỏng | Engine bám vào ký hiệu nội bộ Qt của Viber; có thể cần cập nhật lại khi Viber đổi. |
+| `symbol not found` (Linux/Mac) | Qt khác phiên bản. Dòng lỗi in ra tên module Qt tìm được — gửi vào issue. Linux có thể là Qt5. |
+| `ptrace` bị chặn (Linux) | `sudo ./viber_sync.sh`, hoặc `echo 0 \| sudo tee /proc/sys/kernel/yama/ptrace_scope`. |
 
 ---
 
