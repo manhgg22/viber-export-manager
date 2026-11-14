@@ -1,0 +1,144 @@
+"""Copies media referenced by the export into a self-contained export/media/ tree.
+
+Viber does not store image bytes in viber.db - the database only keeps the
+on-disk paths (PayloadPath = original, ThumbnailPath = thumbnail). This module
+resolves those paths and copies whatever still exists into:
+
+    export/media/<peer>/<date>_<eventid>_<name>
+
+For received items that were never downloaded (only a thumbnail exists locally)
+it saves the thumbnail instead. It also writes export/media_index.csv so
+build_log.py can link each copied file back to its message.
+"""
+import csv
+import os
+import re
+import shutil
+
+from . import config
+from . import enrich
+from . import stickers
+from .model import Model, require_db
+
+MEDIA_KINDS = ("image", "video", "file", "voice")
+_SAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def _safe(name, fallback="unknown"):
+    name = _SAFE.sub("_", (name or "").strip()).strip(". ")
+    return (name or fallback)[:80]
+
+
+def _safe_file(name, fallback="file"):
+    """Sanitize a file name while keeping its extension. Only the stem is
+    length-capped, so long Viber hash names don't lose their `.m4a`/`.mp4`
+    suffix (which is what makes the copy openable without Viber)."""
+    stem, ext = os.path.splitext(name or "")
+    ext = _SAFE.sub("", ext)[:12]
+    stem = _SAFE.sub("_", stem.strip()).strip(". ")[:80] or fallback
+    return stem + ext
+
+
+def _sticker(sticker_id, media_root, cache):
+    """Copy a sticker PNG (once per id) into media/stickers/. Return rel path."""
+    key = str(sticker_id)
+    if key in cache:
+        return cache[key]
+    src = stickers.resolve(sticker_id)
+    rel = ""
+    if src and os.path.exists(src):
+        dest_dir = os.path.join(media_root, "stickers")
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, f"{int(sticker_id):08d}.png")
+        try:
+            shutil.copy2(src, dest)
+            rel = os.path.relpath(dest, config.EXPORT_DIR).replace(os.sep, "/")
+        except Exception:
+            rel = ""
+    cache[key] = rel
+    return rel
+
+
+def run(db=None, include_thumbs=True):
+    db = require_db(db)
+    model = Model(db)
+    media_root = os.path.join(config.EXPORT_DIR, "media")
+    os.makedirs(media_root, exist_ok=True)
+
+    index_path = os.path.join(config.EXPORT_DIR, "media_index.csv")
+    saved = copied_orig = copied_thumb = copied_sticker = missing = 0
+    sticker_cache = {}
+
+    with open(index_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["EventID", "time", "direction", "peer", "kind",
+                         "status", "orig_path", "saved_path"])
+
+        for r in model.events():
+            row = dict(r)
+            desc = enrich.describe(row)
+            _, peer = model.resolve(row["chat"], row["cid"], row["dir"])
+            direction = "OUT" if row["dir"] == 1 else "IN"
+
+            if desc["kind"] == "sticker":
+                rel = _sticker(row["StickerID"], media_root, sticker_cache)
+                writer.writerow([row["EventID"], model.iso(row["ts"]), direction,
+                                 peer, "sticker", "sticker" if rel else "missing",
+                                 "", rel])
+                if rel:
+                    saved += 1
+                    copied_sticker += 1
+                else:
+                    missing += 1
+                continue
+
+            if desc["kind"] not in MEDIA_KINDS:
+                continue
+
+            src, status = desc["media_path"], "original"
+            if not (src and os.path.exists(src)):
+                if include_thumbs and desc["thumb_path"] and os.path.exists(desc["thumb_path"]):
+                    src, status = desc["thumb_path"], "thumbnail"
+                else:
+                    missing += 1
+                    writer.writerow([row["EventID"], model.iso(row["ts"]), direction,
+                                     peer, desc["kind"], "missing",
+                                     desc["media_path"] or desc["thumb_path"], ""])
+                    continue
+
+            peer_dir = os.path.join(media_root, _safe(peer, "unknown"))
+            os.makedirs(peer_dir, exist_ok=True)
+            date = model.fmt(row["ts"])[:10]
+            if desc["kind"] == "voice":
+                # Give voice notes a readable name instead of the opaque hash.
+                ext = os.path.splitext(src)[1].lower() or ".m4a"
+                base = _safe_file(f"voice_{_safe(peer, 'contact')}{ext}")
+            else:
+                base = _safe_file(os.path.basename(src), f"file_{row['EventID']}")
+            dest_name = f"{date}_{row['EventID']}_{base}"
+            if status == "thumbnail":
+                dest_name = "thumb_" + dest_name
+            dest = os.path.join(peer_dir, dest_name)
+            try:
+                shutil.copy2(src, dest)
+            except Exception as exc:
+                missing += 1
+                writer.writerow([row["EventID"], model.iso(row["ts"]), direction,
+                                 peer, desc["kind"], f"error:{exc}", src, ""])
+                continue
+
+            rel = os.path.relpath(dest, config.EXPORT_DIR).replace(os.sep, "/")
+            writer.writerow([row["EventID"], model.iso(row["ts"]), direction,
+                             peer, desc["kind"], status, src, rel])
+            saved += 1
+            if status == "original":
+                copied_orig += 1
+            else:
+                copied_thumb += 1
+
+    model.close()
+    print(f"[OK] media -> {media_root}")
+    print(f"     originals: {copied_orig}   thumbnails: {copied_thumb}   "
+          f"stickers: {copied_sticker}   missing: {missing}   "
+          f"(index: {os.path.basename(index_path)})")
+    return media_root

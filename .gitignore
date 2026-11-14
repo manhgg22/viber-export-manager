@@ -1,0 +1,20 @@
+# Du lieu xuat ra (KHONG day tin nhan that len git)
+live_from_db.csv
+live_messages.csv
+events_dump.txt
+processed_real/
+processed/
+processed_*/
+*.db
+*.db-wal
+*.db-shm
+vendor/ViberPC-Export/export/
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# OS
+.DS_Store
+Thumbs.db
